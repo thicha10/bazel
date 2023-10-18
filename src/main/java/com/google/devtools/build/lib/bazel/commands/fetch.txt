@@ -7,4 +7,6 @@ Usage: %{product} %{command} [<option> ...]
 , only works with bzlmod.
   - <targets>: Fetches dependencies only for given targets.
 
+The --force flag can be used with any of the previous options to enforce fetching
+
 %{options}
