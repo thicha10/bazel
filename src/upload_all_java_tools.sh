@@ -26,7 +26,7 @@
 # The script cannot be invoked through a sh_binary using bazel because git
 # cannot be used through a sh_binary.
 
-set -euo pipefail
+set -euxo pipefail
 
 case "$(uname -s | tr [:upper:] [:lower:])" in
 msys*|mingw*|cygwin*)
