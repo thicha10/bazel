@@ -176,15 +176,22 @@ public abstract class RepoRecordedInput implements Comparable<RepoRecordedInput>
       if (pkgLookupValue == null || !pkgLookupValue.packageExists()) {
         return false;
       }
+
+      String[] valueParts = oldValue.split(";"); //last mtime & file content hash
       RootedPath rootedPath =
           RootedPath.toRootedPath(pkgLookupValue.getRoot(), label.toPathFragment());
-      SkyKey fileKey = FileValue.key(rootedPath);
       try {
+        long fileLastModifiedTime = Long.parseLong(valueParts[0]);
+        if(rootedPath.asPath().getLastModifiedTime() == fileLastModifiedTime) {
+          return true;
+        }
+        SkyKey fileKey = FileValue.key(rootedPath);
         FileValue fileValue = (FileValue) env.getValueOrThrow(fileKey, IOException.class);
         if (fileValue == null || !fileValue.isFile() || fileValue.isSpecialFile()) {
           return false;
         }
-        return oldValue.equals(RepositoryFunction.fileValueToMarkerValue(fileValue));
+        String fileContentHash = valueParts[1];
+        return fileContentHash.equals(RepositoryFunction.fileValueToMarkerValue(fileValue));
       } catch (IOException e) {
         return false;
       }
@@ -216,11 +223,17 @@ public abstract class RepoRecordedInput implements Comparable<RepoRecordedInput>
     public boolean isUpToDate(Environment env, @Nullable String oldValue)
         throws InterruptedException {
       try {
+        String[] valueParts = oldValue.split(";"); //last mtime & file content hash
+        long fileLastModifiedTime = Long.parseLong(valueParts[0]);
+        if(path.asPath().getLastModifiedTime() == fileLastModifiedTime) {
+          return true;
+        }
         FileValue fileValue = (FileValue) env.getValueOrThrow(getSkyKey(), IOException.class);
         if (fileValue == null || !fileValue.isFile() || fileValue.isSpecialFile()) {
           return false;
         }
-        return oldValue.equals(RepositoryFunction.fileValueToMarkerValue(fileValue));
+        String fileContentHash = valueParts[1];
+        return fileContentHash.equals(RepositoryFunction.fileValueToMarkerValue(fileValue));
       } catch (IOException e) {
         return false;
       }

@@ -305,7 +305,10 @@ public final class StarlarkRepositoryFunction extends RepositoryFunction {
       // Modify marker data to include the files used by the rule's implementation function.
       for (Map.Entry<Label, String> entry :
           starlarkRepositoryContext.getAccumulatedFileDigests().entrySet()) {
-        recordedInputValues.put(new RepoRecordedInput.LabelFile(entry.getKey()), entry.getValue());
+        Path filePath = RepositoryFunction.getRootedPathFromLabel(entry.getKey(), env).asPath();
+        String fileContentWithTimestamp = filePath.getLastModifiedTime() + ";" + entry.getValue();
+        recordedInputValues.put(
+            new RepoRecordedInput.LabelFile(entry.getKey()), fileContentWithTimestamp);
       }
 
       // Ditto for environment variables accessed via `getenv`.
@@ -344,6 +347,8 @@ public final class StarlarkRepositoryFunction extends RepositoryFunction {
       env.getListener()
           .handle(Event.info(RepositoryResolvedEvent.getRuleDefinitionInformation(rule)));
 
+      throw new RepositoryFunctionException(e, Transience.TRANSIENT);
+    } catch (IOException e) {
       throw new RepositoryFunctionException(e, Transience.TRANSIENT);
     }
 

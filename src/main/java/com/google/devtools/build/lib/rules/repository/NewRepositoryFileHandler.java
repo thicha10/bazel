@@ -76,6 +76,7 @@ public class NewRepositoryFileHandler {
     private final String filename;
     private FileValue fileValue;
     private String fileContent;
+    private long fileLastModifiedTime;
 
     private BaseFileHandler(String filename) {
       this.filename = filename;
@@ -111,24 +112,27 @@ public class NewRepositoryFileHandler {
                 getFileAttrName(), getFileContentAttrName()),
             Transience.PERSISTENT);
       } else if (hasFile) {
-
         fileValue = getFileValue(rule, env);
         if (env.valuesMissing()) {
           return false;
         }
-
+        try{
+          Path filePath = RepositoryFunction.getRootedPathFromLabel(rule.getLabel(), env).asPath();
+          fileLastModifiedTime = filePath.getLastModifiedTime();
+        } catch (EvalException e) {
+          throw new RepositoryFunctionException(e, Transience.PERSISTENT);
+        } catch (IOException e) {
+          throw new RepositoryFunctionException(e, Transience.PERSISTENT);
+        }
       } else if (hasFileContent) {
-
         try {
           fileContent = mapper.get(getFileContentAttrName(), Type.STRING);
         } catch (EvalException e) {
           throw new RepositoryFunctionException(e, Transience.PERSISTENT);
         }
-
       } else {
         fileContent = getDefaultContent(rule);
       }
-
       return true;
     }
 
@@ -147,9 +151,11 @@ public class NewRepositoryFileHandler {
         // Link x/FILENAME to <build_root>/x.FILENAME.
         symlinkFile(fileValue, filename, outputDirectory);
         try {
+          String fileContentWithTimestamp =
+              fileLastModifiedTime + ';' + RepositoryFunction.fileValueToMarkerValue(fileValue);
           recordedInputValues.put(
               new RepoRecordedInput.LabelFile(getFileAttributeAsLabel(rule)),
-              RepositoryFunction.fileValueToMarkerValue(fileValue));
+              fileContentWithTimestamp);
         } catch (IOException e) {
           throw new RepositoryFunctionException(e, Transience.TRANSIENT);
         }
