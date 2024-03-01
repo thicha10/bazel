@@ -23,6 +23,8 @@ import com.google.devtools.build.lib.buildtool.BuildRequest;
 import com.google.devtools.build.lib.buildtool.BuildResult;
 import com.google.devtools.build.lib.buildtool.BuildTool;
 import com.google.devtools.build.lib.buildtool.CqueryProcessor;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.RepositoryMapping;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
@@ -42,15 +44,21 @@ import com.google.devtools.common.options.OptionPriority.PriorityCategory;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParsingException;
 import com.google.devtools.common.options.OptionsParsingResult;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import net.starlark.java.eval.EvalException;
 
 /** Fetches all repos needed for building a given set of targets. */
 public class TargetFetcher {
   private final CommandEnvironment env;
+  private static final List<Label> collectedLabels = new ArrayList<>();
 
   private TargetFetcher(CommandEnvironment env) {
     this.env = env;
@@ -61,6 +69,25 @@ public class TargetFetcher {
       CommandEnvironment env, OptionsParsingResult options, List<String> targets)
       throws RepositoryMappingResolutionException, InterruptedException, TargetFetcherException {
     new TargetFetcher(env).fetchTargets(options, targets);
+  }
+
+  /** Evaluate the targets then collects their fetched repos*/
+  public static List<String> fetchAndCollectTargetRepos(
+      CommandEnvironment env, OptionsParsingResult options, List<String> targets)
+      throws RepositoryMappingResolutionException, InterruptedException, TargetFetcherException {
+    new TargetFetcher(env).fetchTargets(options, targets);
+    Set<String> collectedRepos = new HashSet<>();
+    for (Label label : collectedLabels) {
+      try {
+        RepositoryName repoName = RepositoryName.create(label.getRepoName());
+        if (!repoName.isMain()) {
+          collectedRepos.add(repoName.getCanonicalForm());
+        }
+      } catch (LabelSyntaxException | EvalException e) {
+        throw new TargetFetcherException("Invalid repo name: " + e.getMessage());
+      }
+    }
+    return collectedRepos.stream().collect(Collectors.toList());
   }
 
   private void fetchTargets(OptionsParsingResult options, List<String> targets)
@@ -95,8 +122,7 @@ public class TargetFetcher {
       @Override
       public void processOutput(Iterable<CqueryNode> partialResult) {
         // Just do nothing!
-        // This will be later used to collect repos for vendoring
-      }
+        partialResult.forEach(target -> collectedLabels.add(target.getLabel()));      }
     };
   }
 
