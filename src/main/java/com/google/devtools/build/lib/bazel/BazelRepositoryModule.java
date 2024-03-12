@@ -157,6 +157,7 @@ public class BazelRepositoryModule extends BlazeModule {
   private LockfileMode bazelLockfileMode = LockfileMode.UPDATE;
 
   private Optional<Path> vendorDirectory;
+  private boolean respectVendor;
   private List<String> allowedYankedVersions = ImmutableList.of();
   private SingleExtensionEvalFunction singleExtensionEvalFunction;
   private final ExecutorService repoFetchingWorkerThreadPool =
@@ -515,6 +516,7 @@ public class BazelRepositoryModule extends BlazeModule {
       } else {
         vendorDirectory = Optional.empty();
       }
+      respectVendor = repoOptions.respectVendor;
 
       if (repoOptions.registries != null && !repoOptions.registries.isEmpty()) {
         registries = repoOptions.registries;
@@ -589,6 +591,7 @@ public class BazelRepositoryModule extends BlazeModule {
         PrecomputedValue.injected(BazelLockFileFunction.LOCKFILE_MODE, bazelLockfileMode),
         PrecomputedValue.injected(RepositoryDelegatorFunction.IS_VENDOR_COMMAND, false),
         PrecomputedValue.injected(RepositoryDelegatorFunction.VENDOR_DIRECTORY, vendorDirectory),
+        PrecomputedValue.injected(RepositoryDelegatorFunction.RESPECT_VENDOR, respectVendor),
         PrecomputedValue.injected(
             YankedVersionsUtil.ALLOWED_YANKED_VERSIONS, allowedYankedVersions));
   }

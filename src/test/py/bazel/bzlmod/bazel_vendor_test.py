@@ -496,6 +496,52 @@ class BazelVendorTest(test_base.TestBase):
         stderr,
     )
 
+  def testBuildingWithRespectVendor(self):
+    self.ScratchFile(
+      'MODULE.bazel',
+      [
+        'ext = use_extension("extension.bzl", "ext")',
+        'use_repo(ext, "venRepo")',
+      ],
+    )
+    self.ScratchFile(
+      'extension.bzl',
+      [
+        'def _repo_rule_impl(ctx):',
+        '    ctx.file("WORKSPACE")',
+        '    ctx.file("BUILD", "filegroup(name=\'lala\')")',
+        'repo_rule = repository_rule(implementation=_repo_rule_impl)',
+        '',
+        'def _ext_impl(ctx):',
+        '    repo_rule(name="venRepo")',
+        'ext = module_extension(implementation=_ext_impl)',
+      ],
+    )
+    self.ScratchFile('BUILD')
+
+    self.RunBazel(['vendor', '--vendor_dir=vendor'])
+    self.assertIn('_main~ext~venRepo', os.listdir(self._test_cwd + '/vendor'))
+
+    # Make changes in vendored repo
+    self.ScratchFile(
+      self._test_cwd + '/vendor/_main~ext~venRepo/BUILD',
+      "filegroup(name=\'IhaveChanged\')",
+    )
+
+    # Building a repo with respect vendor, should build what is under vendor
+    # directory with no warning
+    _, _, stderr = self.RunBazel(
+      ['build', '@venRepo//:all', '--vendor_dir=vendor', '--respect_vendor'],
+    )
+    self.assertNotIn(
+      "Vendored repository '_main~ext~venRepo' is out-of-date.",
+      '\n'.join(stderr)
+    )
+    self.assertIn(
+      'Target @@_main~ext~venRepo//:IhaveChanged up-to-date (nothing to build)',
+      stderr,
+    )
+
 
 if __name__ == '__main__':
   absltest.main()

@@ -328,6 +328,15 @@ public class RepositoryOptions extends OptionsBase {
               + "workspace directory.")
   public PathFragment vendorDirectory;
 
+  @Option(
+      name = "respect_vendor",
+      defaultValue = "False",
+      documentationCategory = OptionDocumentationCategory.BZLMOD,
+      effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
+      help =
+          "Uses the repos under the vendor directory without checking if they are up-to-date.")
+  public boolean respectVendor;
+
   /** An enum for specifying different modes for checking direct dependency accuracy. */
   public enum CheckDirectDepsMode {
     OFF, // Don't check direct dependency accuracy.

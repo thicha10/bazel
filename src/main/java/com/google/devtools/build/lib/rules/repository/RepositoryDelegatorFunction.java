@@ -90,6 +90,9 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
   public static final Precomputed<Optional<Path>> VENDOR_DIRECTORY =
       new Precomputed<>("vendor_directory");
 
+  public static final Precomputed<Boolean> RESPECT_VENDOR =
+      new Precomputed<>("respect_vendor_directory_contents");
+
   // The marker file version is inject in the rule key digest so the rule key is always different
   // when we decide to update the format.
   private static final int MARKER_FILE_VERSION = 7;
@@ -259,6 +262,11 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
     Path vendorPath = VENDOR_DIRECTORY.get(env).get();
     Path vendorRepoPath = vendorPath.getRelative(repositoryName.getName());
     if (vendorRepoPath.exists()) {
+      if(RESPECT_VENDOR.get(env).booleanValue()) {
+        // With respect vendor, if the repo exists we use it without checking if it's up-to-date
+        return setupOverride(vendorRepoPath.asFragment(), env, repoRoot, repositoryName.getName());
+      }
+
       Path vendorMarker = vendorPath.getChild("@" + repositoryName.getName() + ".marker");
       boolean isVendorRepoUpToDate =
           digestWriter.areRepositoryAndMarkerFileConsistent(handler, env, vendorMarker) != null;
