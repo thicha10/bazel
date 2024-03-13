@@ -33,6 +33,7 @@ public abstract class LocalPathOverride implements NonRegistryOverride {
   @Override
   public RepoSpec getRepoSpec() {
     return RepoSpec.builder()
+        .setBzlFile("@bazel_tools//tools/build_defs/repo:local.bzl")
         .setRuleClassName("local_repository")
         .setAttributes(AttributeValues.create(ImmutableMap.of("path", getPath())))
         .build();

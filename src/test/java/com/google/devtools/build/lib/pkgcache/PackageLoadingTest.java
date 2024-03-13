@@ -106,6 +106,13 @@ public class PackageLoadingTest extends FoundationTestCase {
 
   private void setUpSkyframe(
       PackageOptions packageOptions, BuildLanguageOptions buildLanguageOptions) {
+    AnalysisMock analysisMock = AnalysisMock.getAnalysisMockWithoutBuiltinModules();
+    BlazeDirectories directories =
+        new BlazeDirectories(
+            new ServerDirectories(outputBase, outputBase, outputBase),
+            rootDirectory,
+            /* defaultSystemJavabase= */ null,
+            analysisMock.getProductName());
     PathPackageLocator pkgLocator =
         PathPackageLocator.create(
             /*outputBase=*/ null,
@@ -116,7 +123,8 @@ public class PackageLoadingTest extends FoundationTestCase {
             BazelSkyframeExecutorConstants.BUILD_FILES_BY_PRIORITY);
     packageOptions.showLoadingProgress = true;
     packageOptions.globbingThreads = 7;
-    skyframeExecutor.injectExtraPrecomputedValues(AnalysisMock.get().getPrecomputedValues());
+    skyframeExecutor.injectExtraPrecomputedValues(
+        AnalysisMock.get().getPrecomputedValues(directories));
     skyframeExecutor.preparePackageLoading(
         pkgLocator,
         packageOptions,

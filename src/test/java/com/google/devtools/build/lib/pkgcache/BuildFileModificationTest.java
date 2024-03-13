@@ -91,7 +91,7 @@ public class BuildFileModificationTest extends FoundationTestCase {
             .setExtraSkyFunctions(analysisMock.getSkyFunctions(directories))
             .setSyscallCache(SyscallCache.NO_CACHE)
             .build();
-    skyframeExecutor.injectExtraPrecomputedValues(analysisMock.getPrecomputedValues());
+    skyframeExecutor.injectExtraPrecomputedValues(analysisMock.getPrecomputedValues(directories));
     SkyframeExecutorTestHelper.process(skyframeExecutor);
     OptionsParser parser =
         OptionsParser.builder()

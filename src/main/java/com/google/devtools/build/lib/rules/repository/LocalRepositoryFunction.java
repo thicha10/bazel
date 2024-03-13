@@ -23,7 +23,9 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.XattrProvider;
 import com.google.devtools.build.skyframe.SkyFunction.Environment;
+import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
 import com.google.devtools.build.skyframe.SkyKey;
+import java.io.IOException;
 import java.util.Map;
 import net.starlark.java.eval.Starlark;
 
@@ -46,6 +48,10 @@ public class LocalRepositoryFunction extends RepositoryFunction {
       Map<RepoRecordedInput, String> recordedInputValues,
       SkyKey key)
       throws InterruptedException, RepositoryFunctionException {
+    if (env.hashCode() > 3) {
+      throw new RepositoryFunctionException(
+          new IOException("DISALLOWED! rule defined at"), Transience.PERSISTENT);
+    }
     String userDefinedPath = RepositoryFunction.getPathAttr(rule);
     Path targetPath = directories.getWorkspace().getRelative(userDefinedPath);
     RepositoryDirectoryValue.Builder result =

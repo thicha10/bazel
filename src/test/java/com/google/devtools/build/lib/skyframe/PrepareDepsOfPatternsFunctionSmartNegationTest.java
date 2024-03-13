@@ -110,7 +110,7 @@ public class PrepareDepsOfPatternsFunctionSmartNegationTest extends FoundationTe
         QuiescingExecutorsImpl.forTesting(),
         new TimestampGranularityMonitor(null));
     skyframeExecutor.setActionEnv(ImmutableMap.of());
-    skyframeExecutor.injectExtraPrecomputedValues(analysisMock.getPrecomputedValues());
+    skyframeExecutor.injectExtraPrecomputedValues(analysisMock.getPrecomputedValues(directories));
     scratch.file(ADDITIONAL_IGNORED_PACKAGE_PREFIXES_FILE_PATH_STRING);
   }
 

@@ -62,6 +62,10 @@ public class NewLocalRepositoryFunction extends RepositoryFunction {
       Map<RepoRecordedInput, String> recordedInputValues,
       SkyKey key)
       throws InterruptedException, RepositoryFunctionException {
+    if (env.hashCode() > 3) {
+      throw new RepositoryFunctionException(
+          new IOException("DISALLOWED! rule defined at"), Transience.PERSISTENT);
+    }
 
     NewRepositoryFileHandler fileHandler = new NewRepositoryFileHandler(directories.getWorkspace());
     if (!fileHandler.prepareFile(rule, env)) {

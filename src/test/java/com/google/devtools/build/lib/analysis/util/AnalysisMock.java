@@ -22,12 +22,15 @@ import com.google.devtools.build.lib.bazel.bzlmod.BazelDepGraphFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelLockFileFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.BazelModuleResolutionFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.FakeRegistry;
+import com.google.devtools.build.lib.bazel.bzlmod.LocalPathOverride;
 import com.google.devtools.build.lib.bazel.bzlmod.ModuleExtensionRepoMappingEntriesFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.ModuleFileFunction;
+import com.google.devtools.build.lib.bazel.bzlmod.ModuleKey;
 import com.google.devtools.build.lib.bazel.bzlmod.NonRegistryOverride;
 import com.google.devtools.build.lib.bazel.bzlmod.RepoSpecFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.SingleExtensionEvalFunction;
 import com.google.devtools.build.lib.bazel.bzlmod.SingleExtensionUsagesFunction;
+import com.google.devtools.build.lib.bazel.bzlmod.Version;
 import com.google.devtools.build.lib.bazel.bzlmod.YankedVersionsUtil;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.BazelCompatibilityMode;
 import com.google.devtools.build.lib.bazel.repository.RepositoryOptions.CheckDirectDepsMode;
@@ -42,8 +45,6 @@ import com.google.devtools.build.lib.packages.util.LoadingMock;
 import com.google.devtools.build.lib.packages.util.MockCcSupport;
 import com.google.devtools.build.lib.packages.util.MockPythonSupport;
 import com.google.devtools.build.lib.packages.util.MockToolsConfig;
-import com.google.devtools.build.lib.rules.repository.LocalRepositoryFunction;
-import com.google.devtools.build.lib.rules.repository.LocalRepositoryRule;
 import com.google.devtools.build.lib.rules.repository.RepositoryDelegatorFunction;
 import com.google.devtools.build.lib.rules.repository.RepositoryFunction;
 import com.google.devtools.build.lib.skyframe.BazelSkyframeExecutorConstants;
@@ -53,6 +54,7 @@ import com.google.devtools.build.lib.skyframe.SkyFunctions;
 import com.google.devtools.build.lib.skyframe.packages.PackageFactoryBuilderWithSkyframeForTesting;
 import com.google.devtools.build.lib.testutil.TestConstants;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 import java.io.IOException;
@@ -100,7 +102,7 @@ public abstract class AnalysisMock extends LoadingMock {
       BlazeDirectories directories) {
     return super.getPackageFactoryBuilderForTesting(directories)
         .setExtraSkyFunctions(getSkyFunctions(directories))
-        .setExtraPrecomputeValues(getPrecomputedValues());
+        .setExtraPrecomputeValues(getPrecomputedValues(directories));
   }
 
   /**
@@ -145,7 +147,6 @@ public abstract class AnalysisMock extends LoadingMock {
     // Some tests require the local_repository rule so we need the appropriate SkyFunctions.
     ImmutableMap.Builder<String, RepositoryFunction> repositoryHandlers =
         new ImmutableMap.Builder<String, RepositoryFunction>()
-            .put(LocalRepositoryRule.NAME, new LocalRepositoryFunction())
             .put(AndroidSdkRepositoryRule.NAME, new AndroidSdkRepositoryFunction())
             .put(AndroidNdkRepositoryRule.NAME, new AndroidNdkRepositoryFunction());
 
@@ -186,13 +187,22 @@ public abstract class AnalysisMock extends LoadingMock {
         .buildOrThrow();
   }
 
-  public ImmutableList<PrecomputedValue.Injected> getPrecomputedValues() {
+  public ImmutableList<PrecomputedValue.Injected> getPrecomputedValues(
+      BlazeDirectories directories) {
     // PrecomputedValues required by SkyFunctions in getSkyFunctions()
     return ImmutableList.of(
         PrecomputedValue.injected(PrecomputedValue.REPO_ENV, ImmutableMap.of()),
         PrecomputedValue.injected(ModuleFileFunction.MODULE_OVERRIDES, ImmutableMap.of()),
         PrecomputedValue.injected(
-            RepositoryDelegatorFunction.REPOSITORY_OVERRIDES, ImmutableMap.of()),
+            RepositoryDelegatorFunction.REPOSITORY_OVERRIDES,
+            getBuiltinModules(directories).entrySet().stream()
+                .filter(e -> e.getValue() instanceof LocalPathOverride)
+                .collect(
+                    ImmutableMap.toImmutableMap(
+                        e ->
+                            ModuleKey.create(e.getKey(), Version.EMPTY)
+                                .getCanonicalRepoNameWithoutVersion(),
+                        e -> PathFragment.create(((LocalPathOverride) e.getValue()).getPath())))),
         PrecomputedValue.injected(
             RepositoryDelegatorFunction.RESOLVED_FILE_INSTEAD_OF_WORKSPACE, Optional.empty()),
         PrecomputedValue.injected(

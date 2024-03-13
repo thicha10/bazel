@@ -285,7 +285,7 @@ public abstract class BuildViewTestCase extends FoundationTestCase {
     getOutputPath().createDirectoryAndParents();
     ImmutableList<PrecomputedValue.Injected> extraPrecomputedValues =
         ImmutableList.<PrecomputedValue.Injected>builder()
-            .addAll(analysisMock.getPrecomputedValues())
+            .addAll(analysisMock.getPrecomputedValues(directories))
             .add(
                 PrecomputedValue.injected(
                     ModuleFileFunction.REGISTRIES, ImmutableList.of(registry.getUrl())))

@@ -1377,7 +1377,7 @@ public final class LoadingPhaseRunnerTest {
       packageOptions.defaultVisibility = RuleVisibility.PRIVATE;
       packageOptions.showLoadingProgress = true;
       packageOptions.globbingThreads = 7;
-      skyframeExecutor.injectExtraPrecomputedValues(analysisMock.getPrecomputedValues());
+      skyframeExecutor.injectExtraPrecomputedValues(analysisMock.getPrecomputedValues(directories));
       skyframeExecutor.preparePackageLoading(
           pkgLocator,
           packageOptions,

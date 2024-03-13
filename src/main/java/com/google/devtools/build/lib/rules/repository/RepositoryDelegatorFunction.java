@@ -141,13 +141,20 @@ public final class RepositoryDelegatorFunction implements SkyFunction {
       Path repoRoot =
           RepositoryFunction.getExternalRepositoryDirectory(directories)
               .getRelative(repositoryName.getName());
-      Map<RepositoryName, PathFragment> overrides = REPOSITORY_OVERRIDES.get(env);
-      if (Preconditions.checkNotNull(overrides).containsKey(repositoryName)) {
+
+      // Special cases where we immediately symlink a repo to a directory:
+      //  - @@bazel_tools is always fixed to the 'embedded_tools' directory in the install base;
+      //  - repos overridden by the flag --override_repository are symlinked as specified.
+      PathFragment repoOverridePath =
+          repositoryName.equals(RepositoryName.BAZEL_TOOLS)
+              ? directories.getEmbeddedBinariesRoot().getChild("embedded_tools").asFragment()
+              : REPOSITORY_OVERRIDES.get(env).get(repositoryName);
+      if (repoOverridePath != null) {
         DigestWriter.clearMarkerFile(directories, repositoryName);
-        return setupOverride(
-            overrides.get(repositoryName), env, repoRoot, repositoryName.getName());
+        return setupOverride(repoOverridePath, env, repoRoot, repositoryName.getName());
       }
 
+      // Now we actually find the definition of the repo and decide what to do.
       Rule rule = getRepositoryRule(env, repositoryName, starlarkSemantics);
       if (env.valuesMissing()) {
         return null;
