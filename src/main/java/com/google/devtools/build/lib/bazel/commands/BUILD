@@ -48,7 +48,6 @@ java_library(
         "//src/main/java/com/google/devtools/build/lib/packages/semantics",
         "//src/main/java/com/google/devtools/build/lib/pkgcache",
         "//src/main/java/com/google/devtools/build/lib/query2",
-        "//src/main/java/com/google/devtools/build/lib/query2/common:cquery-node",
         "//src/main/java/com/google/devtools/build/lib/query2/engine",
         "//src/main/java/com/google/devtools/build/lib/rules:repository/repository_directory_value",
         "//src/main/java/com/google/devtools/build/lib/rules:repository/repository_function",

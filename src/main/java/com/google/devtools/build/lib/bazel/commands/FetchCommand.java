@@ -62,15 +62,14 @@ import javax.annotation.Nullable;
     inherits = {TestCommand.class},
     options = {
       FetchOptions.class,
-      CqueryOptions.class,
       PackageOptions.class,
       KeepGoingOption.class,
       LoadingPhaseThreadsOption.class
     },
     usesConfigurationOptions = true,
-    help = "resource:fetch.txt",
-    shortDescription = "Fetches external repositories that are prerequisites to the targets.",
     allowResidue = true,
+    shortDescription = "Fetches external repositories that are prerequisites to the targets.",
+    help = "resource:fetch.txt",
     completion = "label")
 public final class FetchCommand implements BlazeCommand {
 
@@ -80,7 +79,7 @@ public final class FetchCommand implements BlazeCommand {
   public void editOptions(OptionsParser optionsParser) {
     // We only need to inject these options with fetch target (when there is a residue)
     if (!optionsParser.getResidue().isEmpty()) {
-      TargetFetcher.injectOptionsToFetchTarget(optionsParser);
+      TargetFetcher.injectNoBuildOption(optionsParser);
     }
   }
 
@@ -224,11 +223,7 @@ public final class FetchCommand implements BlazeCommand {
     } catch (TargetFetcherException e) {
       return createFailedBlazeCommandResult(
           env.getReporter(), Code.QUERY_EVALUATION_ERROR, e.getMessage());
-    } catch (RepositoryMappingResolutionException e) {
-      return createFailedBlazeCommandResult(
-          env.getReporter(), e.getMessage(), e.getDetailedExitCode());
     }
-
     env.getReporter()
         .handle(Event.info("All external dependencies for these targets fetched successfully."));
     return BlazeCommandResult.success();
