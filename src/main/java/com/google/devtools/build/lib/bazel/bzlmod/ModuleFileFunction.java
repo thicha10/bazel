@@ -16,6 +16,7 @@
 package com.google.devtools.build.lib.bazel.bzlmod;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.collect.ImmutableList;
@@ -27,12 +28,12 @@ import com.google.devtools.build.lib.bazel.bzlmod.ModuleFileValue.NonRootModuleF
 import com.google.devtools.build.lib.bazel.bzlmod.ModuleFileValue.RootModuleFileValue;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.LabelConstants;
+import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.cmdline.RepositoryName;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
 import com.google.devtools.build.lib.packages.BazelStarlarkEnvironment;
-import com.google.devtools.build.lib.packages.DotBazelFileSyntaxChecker;
 import com.google.devtools.build.lib.packages.StarlarkExportable;
 import com.google.devtools.build.lib.profiler.Profiler;
 import com.google.devtools.build.lib.profiler.ProfilerTask;
@@ -41,6 +42,8 @@ import com.google.devtools.build.lib.rules.repository.RepositoryDirectoryValue;
 import com.google.devtools.build.lib.server.FailureDetails.ExternalDeps.Code;
 import com.google.devtools.build.lib.skyframe.ClientEnvironmentFunction;
 import com.google.devtools.build.lib.skyframe.ClientEnvironmentValue;
+import com.google.devtools.build.lib.skyframe.PackageLookupFunction;
+import com.google.devtools.build.lib.skyframe.PackageLookupValue;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue.Precomputed;
 import com.google.devtools.build.lib.util.Fingerprint;
@@ -50,13 +53,17 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.lib.vfs.RootedPath;
 import com.google.devtools.build.skyframe.SkyFunction;
+import com.google.devtools.build.skyframe.SkyFunction.Environment.SkyKeyComputeState;
 import com.google.devtools.build.skyframe.SkyFunctionException;
+import com.google.devtools.build.skyframe.SkyFunctionException.Transience;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
+import com.google.devtools.build.skyframe.SkyframeLookupResult;
 import com.google.errorprone.annotations.FormatMethod;
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -64,13 +71,8 @@ import java.util.Optional;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.EvalException;
 import net.starlark.java.eval.Mutability;
-import net.starlark.java.eval.Starlark;
 import net.starlark.java.eval.StarlarkSemantics;
 import net.starlark.java.eval.StarlarkThread;
-import net.starlark.java.syntax.ParserInput;
-import net.starlark.java.syntax.Program;
-import net.starlark.java.syntax.StarlarkFile;
-import net.starlark.java.syntax.SyntaxError;
 
 /**
  * Takes a {@link ModuleKey} and its override (if any), retrieves the module file from a registry or
@@ -161,10 +163,28 @@ public class ModuleFileFunction implements SkyFunction {
     String moduleFileHash =
         new Fingerprint().addBytes(getModuleFileResult.moduleFile.getContent()).hexDigestAndReset();
 
+    CompiledModuleFile compiledModuleFile;
+    try {
+      compiledModuleFile =
+          CompiledModuleFile.parseAndCompile(
+              getModuleFileResult.moduleFile,
+              moduleKey,
+              starlarkSemantics,
+              starlarkEnv,
+              env.getListener());
+    } catch (ExternalDepsException e) {
+      throw new ModuleFileFunctionException(e, Transience.PERSISTENT);
+    }
+    if (!compiledModuleFile.importStatements().isEmpty()) {
+      throw errorf(
+          Code.BAD_MODULE,
+          "module_import() directives found at %s, but they can only be used in the root module",
+          compiledModuleFile.importStatements().getFirst().location());
+    }
     ModuleThreadContext moduleThreadContext =
         execModuleFile(
-            getModuleFileResult.moduleFile,
-            getModuleFileResult.registry,
+            compiledModuleFile,
+            /* importLabelToParsedModuleFile= */ null,
             moduleKey,
             // Dev dependencies should always be ignored if the current module isn't the root module
             /* ignoreDevDeps= */ true,
@@ -172,13 +192,12 @@ public class ModuleFileFunction implements SkyFunction {
             // We try to prevent most side effects of yanked modules, in particular print().
             /* printIsNoop= */ getModuleFileResult.yankedInfo != null,
             starlarkSemantics,
-            starlarkEnv,
             env.getListener());
 
     // Perform some sanity checks.
     InterimModule module;
     try {
-      module = moduleThreadContext.buildModule();
+      module = moduleThreadContext.buildModule(getModuleFileResult.registry);
     } catch (EvalException e) {
       env.getListener().handle(Event.error(e.getMessageWithStack()));
       throw errorf(Code.BAD_MODULE, "error executing MODULE.bazel file for %s", moduleKey);
@@ -218,37 +237,184 @@ public class ModuleFileFunction implements SkyFunction {
     return NonRootModuleFileValue.create(module, moduleFileHash);
   }
 
+  /**
+   * State object used during root module file evaluation. We try to compile the root module file
+   * itself first, and then read, parse, and compile any imported module files layer by layer, in a
+   * BFS fashion (hence the {@code horizon} field). Finally, everything is collected into the {@code
+   * importLabelToCompiledModuleFile} map for use during actual Starlark execution.
+   */
+  static class RootState implements SkyKeyComputeState {
+    CompiledModuleFile compiledRootModuleFile;
+    ImmutableList<CompiledModuleFile.ModuleImportStatement> horizon;
+    HashMap<String, CompiledModuleFile> importLabelToCompiledModuleFile = new HashMap<>();
+  }
+
   @Nullable
   private SkyValue computeForRootModule(StarlarkSemantics starlarkSemantics, Environment env)
       throws ModuleFileFunctionException, InterruptedException {
-    RootedPath moduleFilePath = getModuleFilePath(workspaceRoot);
-    if (env.getValue(FileValue.key(moduleFilePath)) == null) {
-      return null;
+    RootState state = env.getState(RootState::new);
+    if (state.compiledRootModuleFile == null) {
+      RootedPath moduleFilePath = getModuleFilePath(workspaceRoot);
+      if (env.getValue(FileValue.key(moduleFilePath)) == null) {
+        return null;
+      }
+      byte[] moduleFileContents;
+      if (moduleFilePath.asPath().exists()) {
+        moduleFileContents = readModuleFile(moduleFilePath.asPath());
+      } else {
+        moduleFileContents = BZLMOD_REMINDER.getBytes(UTF_8);
+        createModuleFile(moduleFilePath.asPath(), moduleFileContents);
+        env.getListener()
+            .handle(
+                Event.warn(
+                    "--enable_bzlmod is set, but no MODULE.bazel file was found at the workspace"
+                        + " root. Bazel will create an empty MODULE.bazel file. Please consider"
+                        + " migrating your external dependencies from WORKSPACE to MODULE.bazel. For"
+                        + " more details, please refer to"
+                        + " https://github.com/bazelbuild/bazel/issues/18958."));
+      }
+      try {
+        state.compiledRootModuleFile =
+            CompiledModuleFile.parseAndCompile(
+                ModuleFile.create(moduleFileContents, moduleFilePath.asPath().toString()),
+                ModuleKey.ROOT,
+                starlarkSemantics,
+                starlarkEnv,
+                env.getListener());
+      } catch (ExternalDepsException e) {
+        throw new ModuleFileFunctionException(e, Transience.PERSISTENT);
+      }
+      state.horizon = state.compiledRootModuleFile.importStatements();
     }
-    byte[] moduleFileContents;
-    if (moduleFilePath.asPath().exists()) {
-      moduleFileContents = readModuleFile(moduleFilePath.asPath());
-    } else {
-      moduleFileContents = BZLMOD_REMINDER.getBytes(UTF_8);
-      createModuleFile(moduleFilePath.asPath(), moduleFileContents);
-      env.getListener()
-          .handle(
-              Event.warn(
-                  "--enable_bzlmod is set, but no MODULE.bazel file was found at the workspace"
-                      + " root. Bazel will create an empty MODULE.bazel file. Please consider"
-                      + " migrating your external dependencies from WORKSPACE to MODULE.bazel. For"
-                      + " more details, please refer to"
-                      + " https://github.com/bazelbuild/bazel/issues/18958."));
+    while (!state.horizon.isEmpty()) {
+      var newHorizon =
+          advanceHorizon(
+              state.importLabelToCompiledModuleFile,
+              state.horizon,
+              env,
+              starlarkSemantics,
+              starlarkEnv);
+      if (newHorizon == null) {
+        return null;
+      }
+      state.horizon = newHorizon;
     }
     return evaluateRootModuleFile(
-        moduleFileContents,
-        moduleFilePath,
+        state.compiledRootModuleFile,
+        ImmutableMap.copyOf(state.importLabelToCompiledModuleFile),
         builtinModules,
         MODULE_OVERRIDES.get(env),
         IGNORE_DEV_DEPS.get(env),
         starlarkSemantics,
-        starlarkEnv,
         env.getListener());
+  }
+
+  /**
+   * Reads, parses, and compiles all imported module files named by {@code horizon}, stores the
+   * result in {@code importLabelToCompiledModuleFile}, and finally returns the import statements of
+   * these newly compiled module files as a new "horizon".
+   */
+  private static ImmutableList<CompiledModuleFile.ModuleImportStatement> advanceHorizon(
+      HashMap<String, CompiledModuleFile> importLabelToCompiledModuleFile,
+      ImmutableList<CompiledModuleFile.ModuleImportStatement> horizon,
+      Environment env,
+      StarlarkSemantics starlarkSemantics,
+      BazelStarlarkEnvironment starlarkEnv)
+      throws ModuleFileFunctionException, InterruptedException {
+    var importLabels = new ArrayList<Label>(horizon.size());
+    for (var importStatement : horizon) {
+      if (!importStatement.importLabel().startsWith("//")) {
+        throw errorf(
+            Code.BAD_MODULE,
+            "bad import label '%s' at %s: module_import() must be called with main repo labels "
+                + "(starting with double slashes)",
+            importStatement.importLabel(),
+            importStatement.location());
+      }
+      try {
+        importLabels.add(Label.parseCanonical(importStatement.importLabel()));
+      } catch (LabelSyntaxException e) {
+        throw errorf(
+            Code.BAD_MODULE,
+            "bad import label '%s' at %s: %s",
+            importStatement.importLabel(),
+            importStatement.location(),
+            e.getMessage());
+      }
+    }
+    SkyframeLookupResult result =
+        env.getValuesAndExceptions(
+            importLabels.stream()
+                .map(l -> (SkyKey) PackageLookupValue.key(l.getPackageIdentifier()))
+                .collect(toImmutableSet()));
+    var rootedPaths = new ArrayList<RootedPath>(horizon.size());
+    for (int i = 0; i < horizon.size(); i++) {
+      Label importLabel = importLabels.get(i);
+      PackageLookupValue pkgLookupValue =
+          (PackageLookupValue)
+              result.get(PackageLookupValue.key(importLabel.getPackageIdentifier()));
+      if (pkgLookupValue == null) {
+        return null;
+      }
+      if (!pkgLookupValue.packageExists()) {
+        String message = pkgLookupValue.getErrorMsg();
+        if (pkgLookupValue == PackageLookupValue.NO_BUILD_FILE_VALUE) {
+          message =
+              PackageLookupFunction.explainNoBuildFileValue(
+                  importLabel.getPackageIdentifier(), env);
+        }
+        throw errorf(
+            Code.BAD_MODULE,
+            "unable to load package for '%s' imported at %s: %s",
+            horizon.get(i).importLabel(),
+            horizon.get(i).location(),
+            message);
+      }
+      rootedPaths.add(
+          RootedPath.toRootedPath(pkgLookupValue.getRoot(), importLabel.toPathFragment()));
+    }
+    result =
+        env.getValuesAndExceptions(
+            rootedPaths.stream().map(FileValue::key).collect(toImmutableSet()));
+    var newHorizon = ImmutableList.<CompiledModuleFile.ModuleImportStatement>builder();
+    for (int i = 0; i < horizon.size(); i++) {
+      FileValue fileValue = (FileValue) result.get(FileValue.key(rootedPaths.get(i)));
+      if (fileValue == null) {
+        return null;
+      }
+      if (!fileValue.isFile()) {
+        throw errorf(
+            Code.BAD_MODULE,
+            "error reading '%s' imported at %s: not a regular file",
+            horizon.get(i).importLabel(),
+            horizon.get(i).location());
+      }
+      byte[] bytes;
+      try {
+        bytes = FileSystemUtils.readContent(rootedPaths.get(i).asPath());
+      } catch (IOException e) {
+        throw errorf(
+            Code.BAD_MODULE,
+            "error reading '%s' imported at %s: %s",
+            horizon.get(i).importLabel(),
+            horizon.get(i).location(),
+            e.getMessage());
+      }
+      try {
+        var compiledModuleFile =
+            CompiledModuleFile.parseAndCompile(
+                ModuleFile.create(bytes, rootedPaths.get(i).asPath().toString()),
+                ModuleKey.ROOT,
+                starlarkSemantics,
+                starlarkEnv,
+                env.getListener());
+        importLabelToCompiledModuleFile.put(horizon.get(i).importLabel(), compiledModuleFile);
+        newHorizon.addAll(compiledModuleFile.importStatements());
+      } catch (ExternalDepsException e) {
+        throw new ModuleFileFunctionException(e, Transience.PERSISTENT);
+      }
+    }
+    return newHorizon.build();
   }
 
   public static RootedPath getModuleFilePath(Path workspaceRoot) {
@@ -257,30 +423,31 @@ public class ModuleFileFunction implements SkyFunction {
   }
 
   public static RootModuleFileValue evaluateRootModuleFile(
-      byte[] moduleFileContents,
-      RootedPath moduleFilePath,
+      CompiledModuleFile compiledRootModuleFile,
+      ImmutableMap<String, CompiledModuleFile> importLabelToCompiledModuleFile,
       ImmutableMap<String, NonRegistryOverride> builtinModules,
       Map<String, ModuleOverride> commandOverrides,
       boolean ignoreDevDeps,
       StarlarkSemantics starlarkSemantics,
-      BazelStarlarkEnvironment starlarkEnv,
       ExtendedEventHandler eventHandler)
       throws ModuleFileFunctionException, InterruptedException {
-    String moduleFileHash = new Fingerprint().addBytes(moduleFileContents).hexDigestAndReset();
+    String moduleFileHash =
+        new Fingerprint()
+            .addBytes(compiledRootModuleFile.moduleFile().getContent())
+            .hexDigestAndReset();
     ModuleThreadContext moduleThreadContext =
         execModuleFile(
-            ModuleFile.create(moduleFileContents, moduleFilePath.asPath().toString()),
-            /* registry= */ null,
+            compiledRootModuleFile,
+            importLabelToCompiledModuleFile,
             ModuleKey.ROOT,
             ignoreDevDeps,
             builtinModules,
             /* printIsNoop= */ false,
             starlarkSemantics,
-            starlarkEnv,
             eventHandler);
     InterimModule module;
     try {
-      module = moduleThreadContext.buildModule();
+      module = moduleThreadContext.buildModule(/* registry= */ null);
     } catch (EvalException e) {
       eventHandler.handle(Event.error(e.getMessageWithStack()));
       throw errorf(Code.BAD_MODULE, "error executing MODULE.bazel file for the root module");
@@ -322,39 +489,30 @@ public class ModuleFileFunction implements SkyFunction {
                         ModuleKey.create(name, Version.EMPTY).getCanonicalRepoNameWithoutVersion(),
                     name -> name));
     return RootModuleFileValue.create(
-        module, moduleFileHash, overrides, nonRegistryOverrideCanonicalRepoNameLookup);
+        module,
+        moduleFileHash,
+        overrides,
+        nonRegistryOverrideCanonicalRepoNameLookup,
+        importLabelToCompiledModuleFile);
   }
 
   private static ModuleThreadContext execModuleFile(
-      ModuleFile moduleFile,
-      @Nullable Registry registry,
+      CompiledModuleFile compiledRootModuleFile,
+      @Nullable ImmutableMap<String, CompiledModuleFile> importLabelToParsedModuleFile,
       ModuleKey moduleKey,
       boolean ignoreDevDeps,
       ImmutableMap<String, NonRegistryOverride> builtinModules,
       boolean printIsNoop,
       StarlarkSemantics starlarkSemantics,
-      BazelStarlarkEnvironment starlarkEnv,
       ExtendedEventHandler eventHandler)
       throws ModuleFileFunctionException, InterruptedException {
-    StarlarkFile starlarkFile =
-        StarlarkFile.parse(ParserInput.fromUTF8(moduleFile.getContent(), moduleFile.getLocation()));
-    if (!starlarkFile.ok()) {
-      Event.replayEventsOn(eventHandler, starlarkFile.errors());
-      throw errorf(Code.BAD_MODULE, "error parsing MODULE.bazel file for %s", moduleKey);
-    }
-
     ModuleThreadContext context =
-        new ModuleThreadContext(builtinModules, moduleKey, registry, ignoreDevDeps);
+        new ModuleThreadContext(
+            builtinModules, moduleKey, ignoreDevDeps, importLabelToParsedModuleFile);
     try (SilentCloseable c =
             Profiler.instance()
                 .profile(ProfilerTask.BZLMOD, () -> "evaluate module file: " + moduleKey);
         Mutability mu = Mutability.create("module file", moduleKey)) {
-      new DotBazelFileSyntaxChecker("MODULE.bazel files", /* canLoadBzl= */ false)
-          .check(starlarkFile);
-      net.starlark.java.eval.Module predeclaredEnv =
-          net.starlark.java.eval.Module.withPredeclared(
-              starlarkSemantics, starlarkEnv.getStarlarkGlobals().getModuleToplevels());
-      Program program = Program.compileFile(starlarkFile, predeclaredEnv);
       StarlarkThread thread = new StarlarkThread(mu, starlarkSemantics);
       context.storeInThread(thread);
       if (printIsNoop) {
@@ -371,10 +529,7 @@ public class ModuleFileFunction implements SkyFunction {
               }
             }
           });
-      Starlark.execFileProgram(program, predeclaredEnv, thread);
-    } catch (SyntaxError.Exception e) {
-      Event.replayEventsOn(eventHandler, e.errors());
-      throw errorf(Code.BAD_MODULE, "error executing MODULE.bazel file for %s", moduleKey);
+      compiledRootModuleFile.runOnThread(thread);
     } catch (EvalException e) {
       eventHandler.handle(Event.error(e.getMessageWithStack()));
       throw errorf(Code.BAD_MODULE, "error executing MODULE.bazel file for %s", moduleKey);
@@ -382,14 +537,15 @@ public class ModuleFileFunction implements SkyFunction {
     return context;
   }
 
-  private static class GetModuleFileResult {
-    ModuleFile moduleFile;
-    // `yankedInfo` is non-null if and only if the module has been yanked and hasn't been
-    // allowlisted.
-    @Nullable String yankedInfo;
-    // `registry` can be null if this module has a non-registry override.
-    @Nullable Registry registry;
-  }
+  /**
+   * Result of a {@link #getModuleFile} call.
+   *
+   * @param moduleFile
+   * @param yankedInfo non-null iff the module has been yanked and hasn't been allowlisted.
+   * @param registry can be null if this module has a non-registry override.
+   */
+  private record GetModuleFileResult(
+      ModuleFile moduleFile, @Nullable String yankedInfo, @Nullable Registry registry) {}
 
   @Nullable
   private GetModuleFileResult getModuleFile(
@@ -415,16 +571,16 @@ public class ModuleFileFunction implements SkyFunction {
       if (env.getValue(FileValue.key(moduleFilePath)) == null) {
         return null;
       }
-      GetModuleFileResult result = new GetModuleFileResult();
       Label moduleFileLabel =
           Label.createUnvalidated(
               PackageIdentifier.create(canonicalRepoName, PathFragment.EMPTY_FRAGMENT),
               LabelConstants.MODULE_DOT_BAZEL_FILE_NAME.getBaseName());
-      result.moduleFile =
+      return new GetModuleFileResult(
           ModuleFile.create(
               readModuleFile(moduleFilePath.asPath()),
-              moduleFileLabel.getUnambiguousCanonicalForm());
-      return result;
+              moduleFileLabel.getUnambiguousCanonicalForm()),
+          /* yankedInfo= */ null,
+          /* registry= */ null);
     }
 
     // Otherwise, we should get the module file from a registry.
@@ -464,20 +620,18 @@ public class ModuleFileFunction implements SkyFunction {
 
     // Now go through the list of registries and use the first one that contains the requested
     // module.
-    GetModuleFileResult result = new GetModuleFileResult();
     for (Registry registry : registryObjects) {
       try {
         Optional<ModuleFile> moduleFile = registry.getModuleFile(key, env.getListener());
         if (moduleFile.isEmpty()) {
           continue;
         }
-        result.moduleFile = moduleFile.get();
-        result.registry = registry;
-        result.yankedInfo =
+        return new GetModuleFileResult(
+            moduleFile.get(),
             YankedVersionsUtil.getYankedInfo(
                     registry, key, allowedYankedVersions, env.getListener())
-                .orElse(null);
-        return result;
+                .orElse(null),
+            registry);
       } catch (IOException e) {
         throw errorf(
             Code.ERROR_ACCESSING_REGISTRY, e, "Error accessing registry %s", registry.getUrl());

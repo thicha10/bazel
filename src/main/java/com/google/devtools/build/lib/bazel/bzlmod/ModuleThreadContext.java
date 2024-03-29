@@ -41,6 +41,7 @@ public class ModuleThreadContext {
   private final boolean ignoreDevDeps;
   private final InterimModule.Builder module;
   private final ImmutableMap<String, NonRegistryOverride> builtinModules;
+  @Nullable private final ImmutableMap<String, CompiledModuleFile> importLabelToCompiledModuleFile;
   private final Map<String, DepSpec> deps = new LinkedHashMap<>();
   private final List<ModuleExtensionUsageBuilder> extensionUsageBuilders = new ArrayList<>();
   private final Map<String, ModuleOverride> overrides = new HashMap<>();
@@ -62,11 +63,12 @@ public class ModuleThreadContext {
   public ModuleThreadContext(
       ImmutableMap<String, NonRegistryOverride> builtinModules,
       ModuleKey key,
-      @Nullable Registry registry,
-      boolean ignoreDevDeps) {
-    module = InterimModule.builder().setKey(key).setRegistry(registry);
+      boolean ignoreDevDeps,
+      @Nullable ImmutableMap<String, CompiledModuleFile> importLabelToCompiledModuleFile) {
+    module = InterimModule.builder().setKey(key);
     this.ignoreDevDeps = ignoreDevDeps;
     this.builtinModules = builtinModules;
+    this.importLabelToCompiledModuleFile = importLabelToCompiledModuleFile;
   }
 
   record RepoNameUsage(String how, Location where) {}
@@ -224,6 +226,18 @@ public class ModuleThreadContext {
     }
   }
 
+  public void importModule(String importLabel, StarlarkThread thread)
+      throws InterruptedException, EvalException {
+    if (importLabelToCompiledModuleFile == null) {
+      throw Starlark.errorf("not root module");
+    }
+    var compiledModuleFile = importLabelToCompiledModuleFile.get(importLabel);
+    if (compiledModuleFile == null) {
+      throw Starlark.errorf("wat??");
+    }
+    compiledModuleFile.runOnThread(thread);
+  }
+
   public void addOverride(String moduleName, ModuleOverride override) throws EvalException {
     ModuleOverride existingOverride = overrides.putIfAbsent(moduleName, override);
     if (existingOverride != null) {
@@ -231,7 +245,7 @@ public class ModuleThreadContext {
     }
   }
 
-  public InterimModule buildModule() throws EvalException {
+  public InterimModule buildModule(@Nullable Registry registry) throws EvalException {
     // Add builtin modules as default deps of the current module.
     for (String builtinModule : builtinModules.keySet()) {
       if (module.getKey().getName().equals(builtinModule)) {
@@ -257,6 +271,7 @@ public class ModuleThreadContext {
       extensionUsages.add(extensionUsageBuilder.buildUsage());
     }
     return module
+        .setRegistry(registry)
         .setDeps(ImmutableMap.copyOf(deps))
         .setOriginalDeps(ImmutableMap.copyOf(deps))
         .setExtensionUsages(extensionUsages.build())

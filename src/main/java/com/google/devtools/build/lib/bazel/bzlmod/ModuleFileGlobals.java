@@ -664,7 +664,7 @@ public class ModuleFileGlobals {
   }
 
   @StarlarkBuiltin(name = "repo_rule_proxy", documented = false)
-  class RepoRuleProxy implements StarlarkValue {
+  static class RepoRuleProxy implements StarlarkValue {
     private final ModuleExtensionUsageBuilder usageBuilder;
     private final String tagName;
 
@@ -696,6 +696,20 @@ public class ModuleFileGlobals {
       extensionProxy.getValue(tagName).call(kwargs, thread);
       extensionProxy.addImport(name, name, "by a repo rule", thread.getCallerLocation());
     }
+  }
+
+  @StarlarkMethod(
+      name = "module_import",
+      doc = "Imports the contents of another MODULE.bazel-like file. TODO: explain nuances",
+      parameters = {
+        @Param(name = "label", doc = "The label pointing to the file to import."),
+      },
+      useStarlarkThread = true)
+  public void moduleImport(String label, StarlarkThread thread)
+      throws InterruptedException, EvalException {
+    ModuleThreadContext context = ModuleThreadContext.fromOrFail(thread, "module_import()");
+    context.setNonModuleCalled();
+    context.importModule(label, thread);
   }
 
   @StarlarkMethod(
